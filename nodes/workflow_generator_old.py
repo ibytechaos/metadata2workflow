@@ -4,7 +4,7 @@ from typing import Dict, Any, Tuple, List
 
 class WorkflowGeneratorNode:
     """
-    ComfyUI node for generating workflow from parsed metadata with LoRA support
+    ComfyUI node for generating workflow from parsed metadata
     """
     
     @classmethod
@@ -34,7 +34,7 @@ class WorkflowGeneratorNode:
     
     def generate_workflow(self, parsed_data: Dict[str, Any], model_name: str = "", vae_name: str = "", workflow_template: str = "basic") -> Tuple[str]:
         """
-        Generate ComfyUI workflow from parsed metadata with LoRA support
+        Generate ComfyUI workflow from parsed metadata
         """
         try:
             if workflow_template == "basic":
@@ -63,10 +63,37 @@ class WorkflowGeneratorNode:
         except:
             width, height = 512, 512
         
-        # Get LoRAs
+        # Check if there are LoRAs to add
         loras = data.get("loras", [])
+        has_loras = len(loras) > 0
+        
+        # Determine model and CLIP connections based on LoRA presence
+        if has_loras:
+            model_connection = [f"{100 + len(loras) - 1}", 0]  # Last LoRA loader output
+            clip_connection = [f"{100 + len(loras) - 1}", 1]   # Last LoRA loader output
+        else:
+            model_connection = ["4", 0]  # Direct from checkpoint
+            clip_connection = ["4", 1]   # Direct from checkpoint
         
         workflow = {
+            "3": {
+                "inputs": {
+                    "seed": data.get("seed", -1),
+                    "steps": data.get("steps", 20),
+                    "cfg": data.get("cfg_scale", 7.0),
+                    "sampler_name": self._map_sampler(data.get("sampler", "Euler a")),
+                    "scheduler": self._map_scheduler(data.get("scheduler", "normal")),
+                    "denoise": 1.0,
+                    "model": model_connection,
+                    "positive": ["6", 0],
+                    "negative": ["7", 0],
+                    "latent_image": ["5", 0]
+                },
+                "class_type": "KSampler",
+                "_meta": {
+                    "title": "KSampler"
+                }
+            },
             "4": {
                 "inputs": {
                     "ckpt_name": model_name or data.get("model", "sd_xl_base_1.0.safetensors")
@@ -86,24 +113,11 @@ class WorkflowGeneratorNode:
                 "_meta": {
                     "title": "Empty Latent Image"
                 }
-            }
-        }
-        
-        # Add LoRA loaders if present
-        if loras:
-            model_clip_connections = self._add_lora_loaders(workflow, loras)
-        else:
-            model_clip_connections = {
-                "model": ["4", 0],
-                "clip": ["4", 1]
-            }
-        
-        # Add text encoders
-        workflow.update({
+            },
             "6": {
                 "inputs": {
                     "text": data.get("positive_prompt", ""),
-                    "clip": model_clip_connections["clip"]
+                    "clip": ["4", 1]
                 },
                 "class_type": "CLIPTextEncode",
                 "_meta": {
@@ -113,54 +127,17 @@ class WorkflowGeneratorNode:
             "7": {
                 "inputs": {
                     "text": data.get("negative_prompt", ""),
-                    "clip": model_clip_connections["clip"]
+                    "clip": ["4", 1]
                 },
                 "class_type": "CLIPTextEncode",
                 "_meta": {
                     "title": "CLIP Text Encode (Negative)"
                 }
-            }
-        })
-        
-        # Add KSampler
-        workflow["3"] = {
-            "inputs": {
-                "seed": data.get("seed", -1),
-                "steps": data.get("steps", 20),
-                "cfg": data.get("cfg_scale", 7.0),
-                "sampler_name": self._map_sampler(data.get("sampler", "Euler a")),
-                "scheduler": self._map_scheduler(data.get("scheduler", "normal")),
-                "denoise": 1.0,
-                "model": model_clip_connections["model"],
-                "positive": ["6", 0],
-                "negative": ["7", 0],
-                "latent_image": ["5", 0]
             },
-            "class_type": "KSampler",
-            "_meta": {
-                "title": "KSampler"
-            }
-        }
-        
-        # Add VAE decode and save
-        vae_connection = ["4", 2]
-        if vae_name and vae_name.strip():
-            workflow["10"] = {
-                "inputs": {
-                    "vae_name": vae_name
-                },
-                "class_type": "VAELoader",
-                "_meta": {
-                    "title": "Load VAE"
-                }
-            }
-            vae_connection = ["10", 0]
-        
-        workflow.update({
             "8": {
                 "inputs": {
                     "samples": ["3", 0],
-                    "vae": vae_connection
+                    "vae": ["4", 2]
                 },
                 "class_type": "VAEDecode",
                 "_meta": {
@@ -177,49 +154,27 @@ class WorkflowGeneratorNode:
                     "title": "Save Image"
                 }
             }
-        })
+        }
+        
+        # Add VAE loader if specific VAE is provided
+        if vae_name and vae_name.strip():
+            workflow["10"] = {
+                "inputs": {
+                    "vae_name": vae_name
+                },
+                "class_type": "VAELoader",
+                "_meta": {
+                    "title": "Load VAE"
+                }
+            }
+            # Update VAE references
+            workflow["8"]["inputs"]["vae"] = ["10", 0]
         
         return workflow
     
-    def _add_lora_loaders(self, workflow: Dict[str, Any], loras: List[Dict[str, Any]]) -> Dict[str, str]:
-        """
-        Add LoRA loader nodes to the workflow
-        
-        Returns the final model and clip connections
-        """
-        # Start with checkpoint connections
-        prev_model = ["4", 0]
-        prev_clip = ["4", 1]
-        
-        for i, lora in enumerate(loras):
-            node_id = str(100 + i)  # Start LoRA nodes from ID 100
-            
-            workflow[node_id] = {
-                "inputs": {
-                    "lora_name": lora["name"],
-                    "strength_model": lora["strength"],
-                    "strength_clip": lora["strength"],
-                    "model": prev_model,
-                    "clip": prev_clip
-                },
-                "class_type": "LoraLoader",
-                "_meta": {
-                    "title": f"Load LoRA - {lora['name']}"
-                }
-            }
-            
-            # Update connections for next LoRA or final use
-            prev_model = [node_id, 0]
-            prev_clip = [node_id, 1]
-        
-        return {
-            "model": prev_model,
-            "clip": prev_clip
-        }
-    
     def _generate_advanced_workflow(self, data: Dict[str, Any], model_name: str, vae_name: str) -> Dict[str, Any]:
         """
-        Generate advanced workflow with LoRA support and upscaling
+        Generate advanced workflow with more nodes
         """
         basic_workflow = self._generate_basic_workflow(data, model_name, vae_name)
         
@@ -229,15 +184,6 @@ class WorkflowGeneratorNode:
             width, height = map(int, size.split("x"))
         except:
             width, height = 512, 512
-        
-        # Get model connection (could be from LoRAs)
-        loras = data.get("loras", [])
-        if loras:
-            model_connection = [f"{100 + len(loras) - 1}", 0]
-            clip_connection = [f"{100 + len(loras) - 1}", 1]
-        else:
-            model_connection = ["4", 0]
-            clip_connection = ["4", 1]
         
         # Add upscaling and additional processing
         advanced_nodes = {
@@ -262,7 +208,7 @@ class WorkflowGeneratorNode:
                     "sampler_name": self._map_sampler(data.get("sampler", "Euler a")),
                     "scheduler": self._map_scheduler(data.get("scheduler", "normal")),
                     "denoise": 0.5,
-                    "model": model_connection,
+                    "model": ["4", 0],
                     "positive": ["6", 0],
                     "negative": ["7", 0],
                     "latent_image": ["11", 0]
@@ -284,7 +230,7 @@ class WorkflowGeneratorNode:
     
     def _generate_img2img_workflow(self, data: Dict[str, Any], model_name: str, vae_name: str) -> Dict[str, Any]:
         """
-        Generate img2img workflow with LoRA support
+        Generate img2img workflow
         """
         # Extract dimensions
         size = data.get("size", "512x512")
@@ -293,74 +239,7 @@ class WorkflowGeneratorNode:
         except:
             width, height = 512, 512
         
-        # Get LoRAs
-        loras = data.get("loras", [])
-        
         workflow = {
-            "4": {
-                "inputs": {
-                    "ckpt_name": model_name or data.get("model", "sd_xl_base_1.0.safetensors")
-                },
-                "class_type": "CheckpointLoaderSimple",
-                "_meta": {
-                    "title": "Load Checkpoint"
-                }
-            },
-            "10": {
-                "inputs": {
-                    "image": "input_image_placeholder"
-                },
-                "class_type": "LoadImage",
-                "_meta": {
-                    "title": "Load Image"
-                }
-            }
-        }
-        
-        # Add LoRA loaders if present
-        if loras:
-            model_clip_connections = self._add_lora_loaders(workflow, loras)
-        else:
-            model_clip_connections = {
-                "model": ["4", 0],
-                "clip": ["4", 1]
-            }
-        
-        # Add VAE encode for img2img
-        vae_connection = ["4", 2]
-        workflow["13"] = {
-            "inputs": {
-                "pixels": ["10", 0],
-                "vae": vae_connection
-            },
-            "class_type": "VAEEncode",
-            "_meta": {
-                "title": "VAE Encode"
-            }
-        }
-        
-        # Add text encoders and other nodes
-        workflow.update({
-            "6": {
-                "inputs": {
-                    "text": data.get("positive_prompt", ""),
-                    "clip": model_clip_connections["clip"]
-                },
-                "class_type": "CLIPTextEncode",
-                "_meta": {
-                    "title": "CLIP Text Encode (Prompt)"
-                }
-            },
-            "7": {
-                "inputs": {
-                    "text": data.get("negative_prompt", ""),
-                    "clip": model_clip_connections["clip"]
-                },
-                "class_type": "CLIPTextEncode",
-                "_meta": {
-                    "title": "CLIP Text Encode (Negative)"
-                }
-            },
             "3": {
                 "inputs": {
                     "seed": data.get("seed", -1),
@@ -369,7 +248,7 @@ class WorkflowGeneratorNode:
                     "sampler_name": self._map_sampler(data.get("sampler", "Euler a")),
                     "scheduler": self._map_scheduler(data.get("scheduler", "normal")),
                     "denoise": data.get("denoising_strength", 0.7),
-                    "model": model_clip_connections["model"],
+                    "model": ["4", 0],
                     "positive": ["6", 0],
                     "negative": ["7", 0],
                     "latent_image": ["13", 0]
@@ -379,10 +258,39 @@ class WorkflowGeneratorNode:
                     "title": "KSampler"
                 }
             },
+            "4": {
+                "inputs": {
+                    "ckpt_name": model_name or data.get("model", "sd_xl_base_1.0.safetensors")
+                },
+                "class_type": "CheckpointLoaderSimple",
+                "_meta": {
+                    "title": "Load Checkpoint"
+                }
+            },
+            "6": {
+                "inputs": {
+                    "text": data.get("positive_prompt", ""),
+                    "clip": ["4", 1]
+                },
+                "class_type": "CLIPTextEncode",
+                "_meta": {
+                    "title": "CLIP Text Encode (Prompt)"
+                }
+            },
+            "7": {
+                "inputs": {
+                    "text": data.get("negative_prompt", ""),
+                    "clip": ["4", 1]
+                },
+                "class_type": "CLIPTextEncode",
+                "_meta": {
+                    "title": "CLIP Text Encode (Negative)"
+                }
+            },
             "8": {
                 "inputs": {
                     "samples": ["3", 0],
-                    "vae": vae_connection
+                    "vae": ["4", 2]
                 },
                 "class_type": "VAEDecode",
                 "_meta": {
@@ -398,8 +306,27 @@ class WorkflowGeneratorNode:
                 "_meta": {
                     "title": "Save Image"
                 }
+            },
+            "10": {
+                "inputs": {
+                    "image": "input_image_placeholder"
+                },
+                "class_type": "LoadImage",
+                "_meta": {
+                    "title": "Load Image"
+                }
+            },
+            "13": {
+                "inputs": {
+                    "pixels": ["10", 0],
+                    "vae": ["4", 2]
+                },
+                "class_type": "VAEEncode",
+                "_meta": {
+                    "title": "VAE Encode"
+                }
             }
-        })
+        }
         
         return workflow
     

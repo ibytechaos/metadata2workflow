@@ -1,6 +1,6 @@
 import re
 import json
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 
 
 class MetadataParserNode:
@@ -23,8 +23,8 @@ class MetadataParserNode:
             }
         }
     
-    RETURN_TYPES = ("STRING", "STRING", "INT", "FLOAT", "STRING", "STRING", "INT", "STRING", "DICT")
-    RETURN_NAMES = ("positive_prompt", "negative_prompt", "steps", "cfg_scale", "sampler", "scheduler", "seed", "size", "parsed_data")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "FLOAT", "STRING", "STRING", "INT", "STRING", "DICT", "LIST")
+    RETURN_NAMES = ("positive_prompt", "negative_prompt", "steps", "cfg_scale", "sampler", "scheduler", "seed", "size", "parsed_data", "loras")
     
     FUNCTION = "parse_metadata"
     CATEGORY = "Metadata2Workflow"
@@ -48,7 +48,8 @@ class MetadataParserNode:
                 parsed_data.get("scheduler", "normal"),
                 parsed_data.get("seed", -1),
                 parsed_data.get("size", "512x512"),
-                parsed_data
+                parsed_data,
+                parsed_data.get("loras", [])
             )
             
         except Exception as e:
@@ -70,7 +71,11 @@ class MetadataParserNode:
             positive_prompt = positive_match.group(1).strip()
             # Remove common prefixes
             positive_prompt = re.sub(r'^(prompt:|positive prompt:)', '', positive_prompt, flags=re.IGNORECASE).strip()
-            parsed_data["positive_prompt"] = positive_prompt
+            
+            # Extract LoRA information from positive prompt
+            loras, clean_prompt = self._extract_loras_from_prompt(positive_prompt)
+            parsed_data["positive_prompt"] = clean_prompt
+            parsed_data["loras"] = loras
         
         # Extract negative prompt
         negative_match = re.search(r'Negative prompt:\s*(.*?)(?=Steps:|$)', text, re.DOTALL | re.IGNORECASE)
@@ -119,7 +124,8 @@ class MetadataParserNode:
             "seed": -1,
             "size": "512x512",
             "negative_prompt": "",
-            "positive_prompt": ""
+            "positive_prompt": "",
+            "loras": []
         }
         
         for key, default_value in defaults.items():
@@ -127,6 +133,74 @@ class MetadataParserNode:
                 parsed_data[key] = default_value
         
         return parsed_data
+    
+    def _extract_loras_from_prompt(self, prompt: str) -> Tuple[List[Dict[str, Any]], str]:
+        """
+        Extract LoRA information from prompt text
+        
+        Args:
+            prompt: The prompt text containing LoRA tags
+            
+        Returns:
+            Tuple of (loras_list, clean_prompt)
+        """
+        loras = []
+        clean_prompt = prompt
+        
+        # Pattern to match LoRA tags: <lora:name:weight> or <lora:name>
+        lora_pattern = r'<lora:([^:>]+):?([0-9]*\.?[0-9]*)>'
+        
+        matches = re.finditer(lora_pattern, prompt, re.IGNORECASE)
+        
+        for match in matches:
+            lora_name = match.group(1).strip()
+            lora_weight = match.group(2).strip()
+            
+            # Default weight is 1.0 if not specified
+            if not lora_weight:
+                lora_weight = 1.0
+            else:
+                try:
+                    lora_weight = float(lora_weight)
+                except ValueError:
+                    lora_weight = 1.0
+            
+            loras.append({
+                "name": lora_name,
+                "strength": lora_weight,
+                "full_tag": match.group(0)
+            })
+            
+            # Remove LoRA tag from clean prompt
+            clean_prompt = clean_prompt.replace(match.group(0), "").strip()
+        
+        # Clean up multiple spaces and commas
+        clean_prompt = re.sub(r'\s*,\s*,\s*', ', ', clean_prompt)
+        clean_prompt = re.sub(r'\s+', ' ', clean_prompt)
+        clean_prompt = clean_prompt.strip(', ')
+        
+        return loras, clean_prompt
+    
+    def _extract_additional_lora_info(self, text: str) -> Dict[str, Any]:
+        """
+        Extract additional LoRA-related parameters from metadata text
+        """
+        lora_info = {}
+        
+        # Look for LoRA-related parameters in the metadata
+        lora_patterns = {
+            "lora_hashes": r'Lora hashes:\s*"([^"]*)"',
+            "hashes": r'Hashes:\s*\{([^}]*)\}',
+            "version": r'Version:\s*([^,\n]+)',
+            "ti_hashes": r'TI hashes:\s*"([^"]*)"'
+        }
+        
+        for param, pattern in lora_patterns.items():
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                lora_info[param] = match.group(1).strip()
+        
+        return lora_info
     
     def _empty_result(self) -> Tuple:
         """
@@ -140,7 +214,8 @@ class MetadataParserNode:
             "sampler": "Euler a",
             "scheduler": "normal",
             "seed": -1,
-            "size": "512x512"
+            "size": "512x512",
+            "loras": []
         }
         
-        return ("", "", 20, 7.0, "Euler a", "normal", -1, "512x512", empty_dict)
+        return ("", "", 20, 7.0, "Euler a", "normal", -1, "512x512", empty_dict, [])
