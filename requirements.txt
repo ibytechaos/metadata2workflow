@@ -1,0 +1,2 @@
+# No additional requirements beyond ComfyUI
+# This plugin uses only standard Python libraries
