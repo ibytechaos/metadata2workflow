@@ -36,6 +36,30 @@ app.registerExtension({
                 }
             });
             
+            options.push({
+                content: "🖼️ Upload Civitai Image",
+                callback: async () => {
+                    console.log('Image upload clicked');
+                    try {
+                        await self.uploadCivitaiImage();
+                    } catch (error) {
+                        console.error('Error in image upload callback:', error);
+                    }
+                }
+            });
+            
+            options.push({
+                content: "🔍 Debug Image Upload",
+                callback: async () => {
+                    console.log('Debug image upload clicked');
+                    try {
+                        await self.debugUploadCivitaiImage();
+                    } catch (error) {
+                        console.error('Error in debug upload callback:', error);
+                    }
+                }
+            });
+            
             return options;
         };
     },
@@ -81,6 +105,821 @@ app.registerExtension({
             console.error('Error processing metadata:', error);
             alert('Error processing metadata: ' + error.message);
         }
+    },
+
+    async uploadCivitaiImage() {
+        let input = null;
+        try {
+            console.log('Starting image upload process...');
+            
+            // Show loading notification
+            this.showNotification('Preparing file upload...', 'info');
+            
+            // Create file input element
+            input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/png,image/jpeg,image/jpg,image/webp';
+            input.style.display = 'none';
+            document.body.appendChild(input);
+            
+            // Wait for file selection
+            const file = await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('File selection timeout'));
+                }, 30000); // 30 second timeout
+                
+                input.onchange = (e) => {
+                    clearTimeout(timeout);
+                    const file = e.target.files[0];
+                    if (file) {
+                        resolve(file);
+                    } else {
+                        reject(new Error('No file selected'));
+                    }
+                };
+                input.onerror = () => {
+                    clearTimeout(timeout);
+                    reject(new Error('File input error'));
+                };
+                input.click();
+            });
+            
+            console.log('File selected:', file.name, file.type, file.size);
+            
+            // Validate file size (max 50MB)
+            const maxSize = 50 * 1024 * 1024;
+            if (file.size > maxSize) {
+                throw new Error(`File too large: ${(file.size / 1024 / 1024).toFixed(1)}MB. Maximum allowed: 50MB`);
+            }
+            
+            // Validate file type
+            const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+            if (!allowedTypes.includes(file.type)) {
+                throw new Error(`Unsupported file type: ${file.type}. Supported: PNG, JPEG, WebP`);
+            }
+            
+            // Show processing notification
+            const progressNotification = this.showProgressNotification(`Processing ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)...`);
+            
+            // Extract metadata from image (with timeout)
+            const metadata = await Promise.race([
+                this.extractImageMetadata(file),
+                new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Metadata extraction timeout after 30 seconds')), 30000)
+                )
+            ]);
+            
+            // Update progress
+            if (progressNotification) {
+                progressNotification.updateMessage('Metadata extracted, generating workflow...');
+            }
+            
+            if (metadata) {
+                console.log('Extracted metadata:', metadata);
+                
+                // Generate workflow from extracted metadata (with timeout)
+                await Promise.race([
+                    this.parseAndGenerateWorkflow(metadata),
+                    new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('Workflow generation timeout after 15 seconds')), 15000)
+                    )
+                ]);
+                
+                // Close progress notification and show success
+                if (progressNotification) {
+                    progressNotification.close();
+                }
+            } else {
+                if (progressNotification) {
+                    progressNotification.close();
+                }
+                throw new Error('No metadata found in the image. Make sure this is a Civitai generated image with embedded metadata.');
+            }
+            
+        } catch (error) {
+            console.error('Error uploading image:', error);
+            
+            // Close progress notification if it exists
+            if (typeof progressNotification !== 'undefined' && progressNotification) {
+                progressNotification.close();
+            }
+            
+            this.showNotification('Error processing image: ' + error.message, 'error');
+        } finally {
+            // Clean up
+            if (input && input.parentNode) {
+                try {
+                    document.body.removeChild(input);
+                } catch (e) {
+                    console.warn('Error removing input element:', e);
+                }
+            }
+        }
+    },
+
+    async debugUploadCivitaiImage() {
+        let input = null;
+        try {
+            console.log('🔍 Starting DEBUG image upload process...');
+            
+            // Show debug notification
+            this.showNotification('Debug mode: Will show ALL found text', 'warning');
+            
+            // Create file input element
+            input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.style.display = 'none';
+            document.body.appendChild(input);
+            
+            // Wait for file selection
+            const file = await new Promise((resolve, reject) => {
+                input.onchange = (e) => {
+                    const file = e.target.files[0];
+                    if (file) resolve(file);
+                    else reject(new Error('No file selected'));
+                };
+                input.click();
+            });
+            
+            console.log('🔍 DEBUG - File selected:', file.name, file.type, file.size);
+            
+            // Extract ALL possible text content
+            const allContent = await this.debugExtractAllContent(file);
+            
+            if (allContent && allContent.length > 0) {
+                console.log('🔍 DEBUG - Found content blocks:', allContent.length);
+                
+                // Display all found content in notifications
+                for (let i = 0; i < allContent.length && i < 5; i++) {
+                    const content = allContent[i];
+                    this.showNotification(
+                        `Text Block ${i+1} (${content.source}): "${content.text.substring(0, 100)}..."`,
+                        'info'
+                    );
+                }
+                
+                // Try to use the first/longest text block
+                const bestContent = allContent[0];
+                console.log('🔍 DEBUG - Using content from:', bestContent.source);
+                console.log('🔍 DEBUG - Full content:', bestContent.text);
+                
+                // Show content in alert for easy copying
+                const userChoice = confirm(
+                    `Found text in ${bestContent.source}:\n\n${bestContent.text.substring(0, 500)}...\n\nDo you want to try generating a workflow with this text?`
+                );
+                
+                if (userChoice) {
+                    await this.parseAndGenerateWorkflow(bestContent.text);
+                }
+            } else {
+                this.showNotification('DEBUG: No text content found in image at all', 'error');
+                console.log('🔍 DEBUG - Absolutely no text content found');
+                
+                // Offer manual input as fallback
+                const manualInput = confirm(
+                    'No metadata found in the image.\n\nWould you like to manually input the metadata text instead?\n(You can copy it from an EXIF viewer or from Civitai)'
+                );
+                
+                if (manualInput) {
+                    const metadata = prompt(
+                        'Please paste the Civitai metadata here:\n(Steps, Sampler, Prompt, etc.)',
+                        ''
+                    );
+                    
+                    if (metadata && metadata.trim()) {
+                        await this.parseAndGenerateWorkflow(metadata.trim());
+                    }
+                }
+            }
+            
+        } catch (error) {
+            console.error('🔍 DEBUG - Error:', error);
+            this.showNotification('Debug upload error: ' + error.message, 'error');
+        } finally {
+            if (input && input.parentNode) {
+                document.body.removeChild(input);
+            }
+        }
+    },
+
+    async debugExtractAllContent(file) {
+        const allContent = [];
+        
+        try {
+            if (file.type === 'image/png') {
+                console.log('🔍 DEBUG - Extracting all PNG text blocks...');
+                const pngContent = await this.debugExtractAllPngText(file);
+                if (pngContent) allContent.push(...pngContent);
+            }
+            
+            if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+                console.log('🔍 DEBUG - Extracting all JPEG text...');
+                const jpegContent = await this.debugExtractAllJpegText(file);
+                if (jpegContent) allContent.push(...jpegContent);
+            }
+            
+            // Sort by text length (longest first)
+            allContent.sort((a, b) => b.text.length - a.text.length);
+            
+            console.log('🔍 DEBUG - Total content blocks found:', allContent.length);
+            allContent.forEach((content, i) => {
+                console.log(`🔍 DEBUG - Block ${i+1}: ${content.source} (${content.text.length} chars)`);
+            });
+            
+        } catch (error) {
+            console.error('🔍 DEBUG - Error in content extraction:', error);
+        }
+        
+        return allContent;
+    },
+
+    async debugExtractAllPngText(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const allContent = [];
+        
+        // Check PNG signature
+        if (uint8Array.length < 8 || uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50) {
+            console.log('🔍 DEBUG - Not a valid PNG file');
+            return allContent;
+        }
+        
+        let offset = 8;
+        let chunkCount = 0;
+        
+        while (offset < uint8Array.length && chunkCount < 100) {
+            if (offset + 12 > uint8Array.length) break;
+            
+            const chunkLength = (uint8Array[offset] << 24) | 
+                              (uint8Array[offset + 1] << 16) | 
+                              (uint8Array[offset + 2] << 8) | 
+                              uint8Array[offset + 3];
+                              
+            const chunkType = String.fromCharCode(
+                uint8Array[offset + 4], uint8Array[offset + 5], 
+                uint8Array[offset + 6], uint8Array[offset + 7]
+            );
+            
+            console.log(`🔍 DEBUG - PNG chunk: ${chunkType}, length: ${chunkLength}`);
+            chunkCount++;
+            
+            if ((chunkType === 'tEXt' || chunkType === 'iTXt' || chunkType === 'zTXt') && 
+                chunkLength > 0 && offset + 8 + chunkLength <= uint8Array.length) {
+                
+                const chunkData = uint8Array.slice(offset + 8, offset + 8 + chunkLength);
+                
+                try {
+                    if (chunkType === 'tEXt') {
+                        const nullIndex = chunkData.indexOf(0);
+                        if (nullIndex > 0) {
+                            const keyword = new TextDecoder('utf-8', {fatal: false}).decode(chunkData.slice(0, nullIndex));
+                            const text = new TextDecoder('utf-8', {fatal: false}).decode(chunkData.slice(nullIndex + 1));
+                            
+                            console.log(`🔍 DEBUG - Found tEXt: "${keyword}" (${text.length} chars)`);
+                            
+                            allContent.push({
+                                source: `PNG tEXt "${keyword}"`,
+                                text: text,
+                                type: 'png-text'
+                            });
+                        }
+                    }
+                    // Add other chunk types if needed
+                    
+                } catch (error) {
+                    console.warn(`🔍 DEBUG - Error parsing ${chunkType}:`, error);
+                }
+            }
+            
+            if (chunkType === 'IEND') break;
+            
+            const nextOffset = offset + 4 + 4 + chunkLength + 4;
+            if (nextOffset <= offset) break;
+            offset = nextOffset;
+        }
+        
+        console.log(`🔍 DEBUG - PNG: Found ${allContent.length} text blocks`);
+        return allContent;
+    },
+
+    async debugExtractAllJpegText(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const allContent = [];
+        
+        // Convert to string for pattern searching
+        const maxSize = Math.min(uint8Array.length, 5 * 1024 * 1024); // Limit to 5MB
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(uint8Array.slice(0, maxSize));
+        
+        console.log(`🔍 DEBUG - JPEG: Searching ${text.length} characters...`);
+        
+        // Look for any text patterns that might be metadata
+        const patterns = [
+            { name: 'Steps pattern', regex: /(Steps:\s*\d+[^]*?)(?=\n\n|\n[A-Z]|$)/gi },
+            { name: 'JSON pattern', regex: /\{[^{}]*"(?:prompt|steps|sampler|model)"[^{}]*\}/gi },
+            { name: 'Parameter block', regex: /((?:Negative prompt:|Steps:|Sampler:|CFG scale:|Seed:|Model:)[^]*?)(?=\n\n|\n[A-Z]|$)/gi },
+            { name: 'Long text block', regex: /([^\x00-\x1f]{100,})/g }
+        ];
+        
+        patterns.forEach(pattern => {
+            let match;
+            let matchCount = 0;
+            while ((match = pattern.regex.exec(text)) !== null && matchCount < 10) {
+                const foundText = match[1] || match[0];
+                if (foundText && foundText.length > 50) {
+                    console.log(`🔍 DEBUG - Found ${pattern.name}: ${foundText.length} chars`);
+                    
+                    allContent.push({
+                        source: `JPEG ${pattern.name}`,
+                        text: foundText.trim(),
+                        type: 'jpeg-text'
+                    });
+                }
+                matchCount++;
+            }
+        });
+        
+        console.log(`🔍 DEBUG - JPEG: Found ${allContent.length} text blocks`);
+        return allContent;
+    },
+
+    async extractImageMetadata(file) {
+        console.log('Extracting metadata from image...');
+        
+        try {
+            // Check if it's a PNG file (most common for AI images)
+            if (file.type === 'image/png') {
+                return await this.extractPngMetadata(file);
+            }
+            
+            // Try EXIF for JPEG files
+            if (file.type === 'image/jpeg' || file.type === 'image/jpg') {
+                return await this.extractExifMetadata(file);
+            }
+            
+            // Try WebP metadata
+            if (file.type === 'image/webp') {
+                return await this.extractWebpMetadata(file);
+            }
+            
+            throw new Error(`Unsupported image format: ${file.type}. Supported formats: PNG, JPEG, WebP`);
+            
+        } catch (error) {
+            console.error('Error extracting metadata:', error);
+            throw error;
+        }
+    },
+
+    async extractPngMetadata(file) {
+        console.log('Extracting PNG metadata...');
+        
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        
+        // PNG file signature check
+        if (uint8Array.length < 8 || 
+            uint8Array[0] !== 0x89 || uint8Array[1] !== 0x50 || 
+            uint8Array[2] !== 0x4E || uint8Array[3] !== 0x47 ||
+            uint8Array[4] !== 0x0D || uint8Array[5] !== 0x0A ||
+            uint8Array[6] !== 0x1A || uint8Array[7] !== 0x0A) {
+            throw new Error('Invalid PNG file signature');
+        }
+        
+        let offset = 8; // Skip PNG signature
+        let chunksProcessed = 0;
+        const maxChunks = 100; // Prevent infinite loops
+        
+        while (offset < uint8Array.length && chunksProcessed < maxChunks) {
+            // Safety check - ensure we have enough bytes for chunk header
+            if (offset + 12 > uint8Array.length) {
+                console.log('Reached end of PNG data');
+                break;
+            }
+            
+            // Read chunk length (4 bytes, big-endian)
+            const chunkLength = (uint8Array[offset] << 24) | 
+                              (uint8Array[offset + 1] << 16) | 
+                              (uint8Array[offset + 2] << 8) | 
+                              uint8Array[offset + 3];
+            
+            // Validate chunk length
+            if (chunkLength < 0 || chunkLength > uint8Array.length || 
+                offset + 8 + chunkLength + 4 > uint8Array.length) {
+                console.warn(`Invalid chunk length ${chunkLength} at offset ${offset}, stopping`);
+                break;
+            }
+            
+            // Read chunk type (4 bytes)
+            const chunkType = String.fromCharCode(
+                uint8Array[offset + 4],
+                uint8Array[offset + 5], 
+                uint8Array[offset + 6],
+                uint8Array[offset + 7]
+            );
+            
+            console.log(`Found PNG chunk: ${chunkType}, length: ${chunkLength}`);
+            chunksProcessed++;
+            
+            // Look for text chunks that might contain metadata
+            if (chunkType === 'tEXt' || chunkType === 'iTXt' || chunkType === 'zTXt') {
+                try {
+                    const chunkData = uint8Array.slice(offset + 8, offset + 8 + chunkLength);
+                    const result = await this.parsePngTextChunk(chunkData, chunkType);
+                    
+                    if (result && result.text) {
+                        console.log(`Found PNG text chunk - keyword: ${result.keyword}, text length: ${result.text.length}`);
+                        console.log('Text preview:', result.text.substring(0, 200) + '...');
+                        
+                        if (this.isValidMetadata(result.text)) {
+                            console.log('✅ Valid metadata found in PNG chunk');
+                            return result.text;
+                        } else {
+                            console.log('❌ Text chunk not recognized as valid metadata');
+                        }
+                    }
+                } catch (error) {
+                    console.warn(`Error processing ${chunkType} chunk:`, error);
+                }
+            }
+            
+            // Check for IEND chunk (end of file)
+            if (chunkType === 'IEND') {
+                console.log('Reached IEND chunk, stopping');
+                break;
+            }
+            
+            // Move to next chunk (length + type + data + CRC)
+            const nextOffset = offset + 4 + 4 + chunkLength + 4;
+            
+            // Prevent infinite loop
+            if (nextOffset <= offset) {
+                console.warn('Invalid chunk offset calculation, stopping');
+                break;
+            }
+            
+            offset = nextOffset;
+        }
+        
+        console.log(`Processed ${chunksProcessed} PNG chunks, no valid metadata found`);
+        
+        // As a fallback, let's try to collect ALL text chunks for debugging
+        console.log('🔍 Collecting all text chunks for debugging...');
+        return await this.extractAllPngText(uint8Array);
+    },
+
+    async extractAllPngText(uint8Array) {
+        // Collect all text chunks for debugging purposes
+        let offset = 8; // Skip PNG signature
+        let chunksProcessed = 0;
+        const maxChunks = 100;
+        const allTexts = [];
+        
+        while (offset < uint8Array.length && chunksProcessed < maxChunks) {
+            if (offset + 12 > uint8Array.length) break;
+            
+            const chunkLength = (uint8Array[offset] << 24) | 
+                              (uint8Array[offset + 1] << 16) | 
+                              (uint8Array[offset + 2] << 8) | 
+                              uint8Array[offset + 3];
+            
+            if (chunkLength < 0 || offset + 8 + chunkLength + 4 > uint8Array.length) break;
+            
+            const chunkType = String.fromCharCode(
+                uint8Array[offset + 4], uint8Array[offset + 5], 
+                uint8Array[offset + 6], uint8Array[offset + 7]
+            );
+            
+            chunksProcessed++;
+            
+            if (chunkType === 'tEXt' || chunkType === 'iTXt' || chunkType === 'zTXt') {
+                try {
+                    const chunkData = uint8Array.slice(offset + 8, offset + 8 + chunkLength);
+                    const result = await this.parsePngTextChunk(chunkData, chunkType);
+                    
+                    if (result && result.text) {
+                        allTexts.push({
+                            keyword: result.keyword,
+                            text: result.text,
+                            type: chunkType,
+                            length: result.text.length
+                        });
+                        
+                        console.log(`📝 Text chunk found - ${chunkType} "${result.keyword}": ${result.text.length} chars`);
+                        console.log(`Content preview: ${result.text.substring(0, 150)}...`);
+                    }
+                } catch (error) {
+                    console.warn(`Error in fallback ${chunkType} parsing:`, error);
+                }
+            }
+            
+            if (chunkType === 'IEND') break;
+            
+            const nextOffset = offset + 4 + 4 + chunkLength + 4;
+            if (nextOffset <= offset) break;
+            offset = nextOffset;
+        }
+        
+        console.log(`📊 Found ${allTexts.length} text chunks total`);
+        
+        if (allTexts.length === 0) {
+            return null;
+        }
+        
+        // Try to find the longest text chunk that might be metadata
+        const candidateTexts = allTexts
+            .filter(item => item.text.length > 50)
+            .sort((a, b) => b.text.length - a.text.length);
+        
+        console.log('🎯 Candidate texts by length:', candidateTexts.map(t => `${t.keyword}(${t.length})`));
+        
+        // Try each candidate text with relaxed validation
+        for (const candidate of candidateTexts) {
+            console.log(`🔍 Trying candidate: "${candidate.keyword}" (${candidate.length} chars)`);
+            
+            // Very relaxed validation - just check for any parameter-like pattern
+            if (this.isLikelyMetadata(candidate.text)) {
+                console.log(`✅ Selected candidate: "${candidate.keyword}"`);
+                return candidate.text;
+            }
+        }
+        
+        // If nothing passes validation, return the longest text anyway for debugging
+        if (candidateTexts.length > 0) {
+            const longest = candidateTexts[0];
+            console.log(`🤷 No candidates passed validation, returning longest text: "${longest.keyword}"`);
+            return longest.text;
+        }
+        
+        return null;
+    },
+
+    isLikelyMetadata(text) {
+        // Very relaxed check for any metadata-like content
+        const lowerText = text.toLowerCase();
+        
+        // Look for any parameter patterns
+        const patterns = [
+            /\w+:\s*\w+/,  // key: value pattern
+            /"[^"]*":\s*[^,}]+/,  // JSON-like patterns
+            /steps|sampler|cfg|seed|model|prompt|lora/i,  // Common AI terms
+            /\d+x\d+/,  // Resolution pattern
+            /<[^>]+>/   // Tag patterns
+        ];
+        
+        const hasPattern = patterns.some(pattern => pattern.test(text));
+        const hasReasonableLength = text.length > 30 && text.length < 10000;
+        
+        console.log(`Metadata likelihood check: hasPattern=${hasPattern}, hasReasonableLength=${hasReasonableLength}`);
+        
+        return hasPattern && hasReasonableLength;
+    },
+
+    async parsePngTextChunk(data, chunkType) {
+        try {
+            if (chunkType === 'tEXt') {
+                // Find null terminator separating keyword from text
+                let nullIndex = -1;
+                for (let i = 0; i < data.length; i++) {
+                    if (data[i] === 0) {
+                        nullIndex = i;
+                        break;
+                    }
+                }
+                
+                if (nullIndex === -1) {
+                    console.warn('No null terminator found in tEXt chunk');
+                    return null;
+                }
+                
+                const keyword = new TextDecoder('utf-8', {fatal: false}).decode(data.slice(0, nullIndex));
+                const text = new TextDecoder('utf-8', {fatal: false}).decode(data.slice(nullIndex + 1));
+                
+                console.log(`PNG tEXt chunk - keyword: "${keyword}", text length: ${text.length}`);
+                
+                return { keyword, text };
+            }
+            
+            if (chunkType === 'iTXt') {
+                // iTXt format: keyword\0compression\0language\0translated_keyword\0text
+                let offset = 0;
+                const parts = [];
+                let currentPart = [];
+                
+                for (let i = 0; i < data.length; i++) {
+                    if (data[i] === 0) {
+                        parts.push(new TextDecoder('utf-8', {fatal: false}).decode(new Uint8Array(currentPart)));
+                        currentPart = [];
+                        if (parts.length === 4) {
+                            // Remaining data is the text
+                            const text = new TextDecoder('utf-8', {fatal: false}).decode(data.slice(i + 1));
+                            console.log(`PNG iTXt chunk - keyword: "${parts[0]}", text length: ${text.length}`);
+                            return { keyword: parts[0], text };
+                        }
+                    } else {
+                        currentPart.push(data[i]);
+                    }
+                }
+            }
+            
+            if (chunkType === 'zTXt') {
+                // zTXt format: keyword\0compression_method\compressed_text
+                let nullIndex = -1;
+                for (let i = 0; i < data.length; i++) {
+                    if (data[i] === 0) {
+                        nullIndex = i;
+                        break;
+                    }
+                }
+                
+                if (nullIndex === -1 || nullIndex + 2 >= data.length) {
+                    console.warn('Invalid zTXt chunk format');
+                    return null;
+                }
+                
+                const keyword = new TextDecoder('utf-8', {fatal: false}).decode(data.slice(0, nullIndex));
+                const compressionMethod = data[nullIndex + 1];
+                
+                if (compressionMethod === 0) { // zlib compression
+                    console.log(`PNG zTXt chunk - keyword: "${keyword}", attempting decompression...`);
+                    // Note: Would need a zlib decompression library for full support
+                    // For now, we'll try to extract what we can
+                    const compressedData = data.slice(nullIndex + 2);
+                    try {
+                        // Try to find readable text patterns in compressed data
+                        const text = new TextDecoder('utf-8', {fatal: false}).decode(compressedData);
+                        if (text.length > 10) {
+                            console.log(`Extracted text from zTXt (may be incomplete): ${text.length} chars`);
+                            return { keyword, text };
+                        }
+                    } catch (e) {
+                        console.warn('Could not decompress zTXt data');
+                    }
+                }
+            }
+            
+        } catch (error) {
+            console.error('Error parsing PNG text chunk:', error);
+        }
+        
+        return null;
+    },
+
+    async extractExifMetadata(file) {
+        console.log('Extracting EXIF metadata...');
+        
+        // Limit file size for string conversion (to prevent memory issues)
+        const maxStringSize = 10 * 1024 * 1024; // 10MB limit for string conversion
+        const arrayBuffer = await file.arrayBuffer();
+        
+        let uint8Array = new Uint8Array(arrayBuffer);
+        if (uint8Array.length > maxStringSize) {
+            console.log(`File too large for full text search (${uint8Array.length} bytes), using first ${maxStringSize} bytes`);
+            uint8Array = uint8Array.slice(0, maxStringSize);
+        }
+        
+        // Convert to string for pattern matching (with error handling)
+        let text;
+        try {
+            text = new TextDecoder('utf-8', { ignoreBOM: true, fatal: false }).decode(uint8Array);
+        } catch (error) {
+            console.error('Failed to decode JPEG as UTF-8:', error);
+            return null;
+        }
+        
+        console.log(`Searching for metadata patterns in JPEG (${text.length} characters)...`);
+        
+        // Look for JSON patterns (limit matches to prevent performance issues)
+        const jsonPatterns = [
+            /\{[^}]{10,1000}"prompt"[^}]{10,1000}\}/g,
+            /\{[^}]{10,1000}"positive_prompt"[^}]{10,1000}\}/g,
+            /\{[^}]{10,1000}"steps"[^}]{10,1000}\}/g,
+            /\{[^}]{10,1000}"sampler"[^}]{10,1000}\}/g
+        ];
+        
+        for (const pattern of jsonPatterns) {
+            let matchCount = 0;
+            const matches = [];
+            let match;
+            
+            // Limit number of matches to prevent performance issues
+            while ((match = pattern.exec(text)) !== null && matchCount < 10) {
+                matches.push(match[0]);
+                matchCount++;
+            }
+            
+            if (matches.length > 0) {
+                console.log(`Found ${matches.length} potential JSON matches`);
+                for (const matchText of matches) {
+                    try {
+                        const parsed = JSON.parse(matchText);
+                        if (this.isValidMetadataObject(parsed)) {
+                            console.log('Found valid JSON metadata in JPEG');
+                            return JSON.stringify(parsed);
+                        }
+                    } catch (e) {
+                        console.debug('JSON parse failed for match');
+                    }
+                }
+            }
+        }
+        
+        // Look for parameter string patterns (limited scope)
+        const paramPatterns = [
+            /(Steps: \d+[^]{0,500})/i,
+            /(Negative prompt:[^]{0,1000}Steps: \d+[^]{0,500})/i,
+            /(<lora:[^>]+>[^]{0,500}Steps: \d+[^]{0,200})/i,
+            /(Sampler: [^,\n]{1,50}[^]{0,300}Steps: \d+[^]{0,200})/i
+        ];
+        
+        for (const pattern of paramPatterns) {
+            const match = text.match(pattern);
+            if (match && match[1] && this.isValidMetadata(match[1])) {
+                console.log('Found parameter string in JPEG');
+                return match[1].trim();
+            }
+        }
+        
+        // Look for base64 encoded metadata (limited to reasonable sizes)
+        const base64Pattern = /([A-Za-z0-9+/]{100,2000}={0,2})/g;
+        let base64MatchCount = 0;
+        let base64Match;
+        
+        while ((base64Match = base64Pattern.exec(text)) !== null && base64MatchCount < 5) {
+            try {
+                const decoded = atob(base64Match[1]);
+                if (decoded.length > 50 && this.isValidMetadata(decoded)) {
+                    console.log('Found base64 encoded metadata in JPEG');
+                    return decoded;
+                }
+            } catch (e) {
+                // Not valid base64, continue
+            }
+            base64MatchCount++;
+        }
+        
+        console.log('No metadata found in JPEG');
+        return null;
+    },
+
+    isValidMetadataObject(obj) {
+        if (!obj || typeof obj !== 'object') return false;
+        
+        const requiredFields = ['prompt', 'positive_prompt', 'steps', 'sampler', 'model', 'baseModel'];
+        return requiredFields.some(field => obj.hasOwnProperty(field));
+    },
+
+    async extractWebpMetadata(file) {
+        console.log('WebP metadata extraction not yet implemented');
+        // WebP metadata extraction would be implemented here
+        return null;
+    },
+
+    isValidMetadata(text) {
+        if (!text || typeof text !== 'string') return false;
+        
+        // Check for common AI generation indicators (more comprehensive)
+        const indicators = [
+            // Parameters
+            'steps:', 'sampler:', 'cfg scale:', 'seed:', 'model:', 'basemodel:', 'base model:',
+            'negative prompt:', 'lora:', 'scheduler:', 'clip skip:', 'denoising strength:',
+            'hires upscaler:', 'hires steps:', 'hires upscale:',
+            
+            // JSON format
+            '"prompt"', '"steps"', '"sampler"', '"cfgscale"', '"cfg_scale"',
+            '"negativePrompt"', '"negative_prompt"', '"baseModel"', '"model"',
+            
+            // Software indicators
+            'automatic1111', 'comfyui', 'stable diffusion', 'civitai', 'novelai',
+            'dream', 'invoke', 'webui',
+            
+            // Common patterns
+            'width:', 'height:', 'size:', 'resolution:',
+            'upscaled by:', 'face restoration:', 'controlnet:'
+        ];
+        
+        const lowerText = text.toLowerCase().trim();
+        
+        // Must be at least 20 characters and contain at least one indicator
+        if (lowerText.length < 20) return false;
+        
+        const hasIndicator = indicators.some(indicator => lowerText.includes(indicator));
+        
+        // Additional check for parameter-like strings
+        const hasParameterPattern = /\w+:\s*[^\s,]+/.test(text);
+        
+        // Check for JSON-like structure
+        const hasJsonPattern = text.includes('"') && (text.includes('{') || text.includes(':'));
+        
+        console.log('Metadata validation:', {
+            text: text.substring(0, 100) + '...',
+            hasIndicator,
+            hasParameterPattern,
+            hasJsonPattern,
+            result: hasIndicator || hasParameterPattern || hasJsonPattern
+        });
+        
+        return hasIndicator || hasParameterPattern || hasJsonPattern;
     },
 
     async parseAndGenerateWorkflow(metadataText) {
@@ -722,6 +1561,55 @@ app.registerExtension({
         });
     },
 
+    showProgressNotification(message) {
+        // Create progress notification element
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            color: white;
+            font-weight: bold;
+            z-index: 10001;
+            max-width: 400px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            transition: all 0.3s ease;
+            background-color: #2196F3;
+            border-left: 4px solid #1976D2;
+        `;
+        
+        // Add message and progress indicator
+        notification.innerHTML = `
+            <div style="display: flex; align-items: center;">
+                <div style="margin-right: 10px;">⏳</div>
+                <div class="message">${message}</div>
+            </div>
+        `;
+        
+        document.body.appendChild(notification);
+        
+        return {
+            updateMessage: (newMessage) => {
+                const messageEl = notification.querySelector('.message');
+                if (messageEl) {
+                    messageEl.textContent = newMessage;
+                }
+            },
+            
+            close: () => {
+                if (notification.parentNode) {
+                    notification.style.opacity = '0';
+                    setTimeout(() => {
+                        if (notification.parentNode) {
+                            notification.parentNode.removeChild(notification);
+                        }
+                    }, 300);
+                }
+            }
+        };
+    },
 
     showNotification(message, type = "info") {
         // Create notification element
