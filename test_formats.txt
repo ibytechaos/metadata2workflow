@@ -1,0 +1,68 @@
+=== 格式1: 标准字符串格式 ===
+a beautiful portrait of a young woman, detailed face, professional lighting, <lora:DetailedEyes:0.8>
+
+Negative prompt: blurry, low quality, distorted face, bad anatomy
+
+Steps: 25, Sampler: DPM++ 2M Karras, CFG scale: 7.5, Seed: 123456789, Size: 768x1024, Model: realisticVisionV51_v51VAE, Scheduler: karras
+
+=== 格式2: baseModel 字段 ===
+beautiful girl, masterpiece, best quality, <lora:someStyle:1.0>
+
+Negative prompt: nsfw, bad hands, low quality
+
+Steps: 30, Sampler: Euler a, CFG scale: 8.0, Seed: 987654321, Size: 512x768, baseModel: dreamshaper_8, Scheduler: normal
+
+=== 格式3: JSON 格式 (Civitai) ===
+{
+  "prompt": "masterpiece, best quality, 1girl, beautiful face, detailed eyes, <lora:artStyle:0.9>",
+  "negativePrompt": "worst quality, low quality, bad anatomy",
+  "steps": 28,
+  "sampler": "DPM++ 2M",
+  "cfgScale": 7.0,
+  "seed": 555666777,
+  "width": 768,
+  "height": 1024,
+  "baseModel": "animagineXLV3_v30.safetensors",
+  "resources": [
+    {
+      "type": "model",
+      "name": "animagineXLV3_v30",
+      "hash": "abc123def456"
+    },
+    {
+      "type": "lora",
+      "name": "artStyle",
+      "weight": 0.9
+    }
+  ]
+}
+
+=== 格式4: A1111 style JSON ===
+{
+  "meta": {
+    "prompt": "cute anime girl, kawaii, <lora:kawaii:0.7>",
+    "negative_prompt": "ugly, deformed",
+    "steps": 35,
+    "sampler_name": "DPM++ 3M SDE",
+    "cfg_scale": 6.5,
+    "seed": 111222333,
+    "model": "anyloraCheckpoint_bakedvaeFtmseFp16NOT.safetensors",
+    "scheduler": "exponential"
+  },
+  "width": 832,
+  "height": 1216
+}
+
+=== 格式5: 嵌套参数格式 ===
+{
+  "parameters": {
+    "positivePrompt": "fantasy landscape, magical forest, <lora:fantasy:0.8>",
+    "negativePrompt": "blurry, low resolution",
+    "steps": 40,
+    "samplerName": "UniPC",
+    "cfgScale": 9.0,
+    "seed": 444555666,
+    "checkpoint": "deliberate_v2.ckpt"
+  },
+  "size": "1024x768"
+}

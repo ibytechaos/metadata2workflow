@@ -122,7 +122,9 @@ app.registerExtension({
         try {
             // Try to parse as JSON first
             if (text.trim().startsWith('{')) {
-                return JSON.parse(text);
+                const jsonData = JSON.parse(text);
+                console.log('Parsed JSON data:', jsonData);
+                return this.normalizeJsonData(jsonData);
             }
             
             // Parse parameter string format
@@ -220,6 +222,9 @@ app.registerExtension({
                     data.size = value.replace(/"/g, ''); // Remove quotes
                     break;
                 case 'model':
+                case 'basemodel':
+                case 'base model':
+                case 'checkpoint':
                     data.model = value.replace(/"/g, ''); // Remove quotes
                     break;
                 case 'model hash':
@@ -247,6 +252,116 @@ app.registerExtension({
         }
     },
 
+    normalizeJsonData(jsonData) {
+        // Handle different JSON structures from various sources
+        const normalized = {};
+        
+        // Direct properties
+        const directMappings = {
+            'prompt': 'positive_prompt',
+            'positivePrompt': 'positive_prompt',
+            'positive_prompt': 'positive_prompt',
+            'negativePrompt': 'negative_prompt',
+            'negative_prompt': 'negative_prompt',
+            'steps': 'steps',
+            'sampler': 'sampler',
+            'samplerName': 'sampler',
+            'sampler_name': 'sampler',
+            'cfgScale': 'cfg_scale',
+            'cfg_scale': 'cfg_scale',
+            'seed': 'seed',
+            'width': 'width',
+            'height': 'height',
+            'size': 'size',
+            'model': 'model',
+            'baseModel': 'model',
+            'base_model': 'model',
+            'checkpoint': 'model',
+            'scheduler': 'scheduler',
+            'clipSkip': 'clip_skip',
+            'clip_skip': 'clip_skip'
+        };
+        
+        // Apply direct mappings
+        for (const [key, normalizedKey] of Object.entries(directMappings)) {
+            if (jsonData[key] !== undefined) {
+                normalized[normalizedKey] = jsonData[key];
+            }
+        }
+        
+        // Handle size as width x height
+        if (jsonData.width && jsonData.height) {
+            normalized.size = `${jsonData.width}x${jsonData.height}`;
+        }
+        
+        // Handle nested parameters object (common in some formats)
+        if (jsonData.parameters) {
+            const params = jsonData.parameters;
+            for (const [key, normalizedKey] of Object.entries(directMappings)) {
+                if (params[key] !== undefined && normalized[normalizedKey] === undefined) {
+                    normalized[normalizedKey] = params[key];
+                }
+            }
+        }
+        
+        // Handle resources array (Civitai format)
+        if (jsonData.resources && Array.isArray(jsonData.resources)) {
+            normalized.resources = jsonData.resources;
+        }
+        
+        // Handle meta object (A1111 format)
+        if (jsonData.meta) {
+            const meta = jsonData.meta;
+            for (const [key, normalizedKey] of Object.entries(directMappings)) {
+                if (meta[key] !== undefined && normalized[normalizedKey] === undefined) {
+                    normalized[normalizedKey] = meta[key];
+                }
+            }
+        }
+        
+        console.log('Normalized JSON data:', normalized);
+        return normalized;
+    },
+
+    extractModelName(data) {
+        // Try different possible model field names
+        const modelFields = ['model', 'baseModel', 'base_model', 'checkpoint', 'ckpt_name'];
+        
+        for (const field of modelFields) {
+            if (data[field]) {
+                let modelName = data[field];
+                
+                // Clean up model name
+                modelName = modelName.replace(/"/g, ''); // Remove quotes
+                modelName = modelName.replace(/\.(safetensors|ckpt)$/i, ''); // Remove file extension
+                
+                // If it looks like a full filename, try to extract just the name part
+                if (modelName.includes('/') || modelName.includes('\\')) {
+                    const parts = modelName.split(/[/\\]/);
+                    modelName = parts[parts.length - 1];
+                }
+                
+                console.log(`Found model name in field '${field}':`, modelName);
+                return modelName;
+            }
+        }
+        
+        // Also check if it's nested in JSON (common in some Civitai formats)
+        if (data.resources && Array.isArray(data.resources)) {
+            for (const resource of data.resources) {
+                if (resource.type === 'model' || resource.type === 'checkpoint') {
+                    if (resource.name) {
+                        console.log('Found model name in resources:', resource.name);
+                        return resource.name.replace(/\.(safetensors|ckpt)$/i, '');
+                    }
+                }
+            }
+        }
+        
+        console.log('No model name found in metadata');
+        return null;
+    },
+
     async createCompleteWorkflow(data) {
         try {
             const nodes = [];
@@ -260,69 +375,82 @@ app.registerExtension({
                 checkpointLoader.pos = [currentX, baseY];
                 app.graph.add(checkpointLoader);
                 nodes.push({node: checkpointLoader, type: 'checkpoint'});
+                console.log('Checkpoint loader created');
                 
                 // Set model name if available
-                if (data.model && checkpointLoader.widgets) {
+                const modelName = this.extractModelName(data);
+                if (modelName && checkpointLoader.widgets) {
+                    console.log('Model name found:', modelName);
+                    console.log('Checkpoint widgets:', checkpointLoader.widgets.map(w => w.name));
+                    
                     const modelWidget = checkpointLoader.widgets.find(w => w.name === "ckpt_name");
                     if (modelWidget) {
-                        modelWidget.value = data.model;
+                        modelWidget.value = modelName;
+                        console.log('Set checkpoint model to:', modelName);
+                        if (modelWidget.callback) {
+                            modelWidget.callback(modelWidget.value);
+                        }
+                    } else {
+                        console.warn('No ckpt_name widget found in checkpoint loader');
                     }
+                } else {
+                    console.log('No model name found in metadata');
                 }
             }
             currentX += nodeSpacing;
             
-            // 2. LoRA Loader (if LoRA is detected in prompt)
-            let loraLoader = null;
+            // 2. LoRA Loaders (if LoRAs are detected in prompt)
+            const loraLoaders = [];
             const loraMatches = data.positive_prompt ? data.positive_prompt.match(/<lora:([^>]+)>/g) : [];
             console.log('LoRA matches found:', loraMatches);
             console.log('Full positive prompt:', data.positive_prompt);
             
             if (loraMatches && loraMatches.length > 0) {
-                console.log('Creating LoRA loader...');
-                loraLoader = LiteGraph.createNode("LoraLoader");
-                if (!loraLoader) {
-                    console.error('Failed to create LoraLoader node');
-                } else {
-                    loraLoader.pos = [currentX, baseY];
+                console.log(`Creating ${loraMatches.length} LoRA loader(s)...`);
+                
+                for (let i = 0; i < loraMatches.length; i++) {
+                    const loraMatch = loraMatches[i];
+                    console.log(`Processing LoRA ${i + 1}:`, loraMatch);
+                    
+                    const loraLoader = LiteGraph.createNode("LoraLoader");
+                    if (!loraLoader) {
+                        console.error(`Failed to create LoraLoader ${i + 1}`);
+                        continue;
+                    }
+                    
+                    // Position LoRAs vertically if multiple
+                    const yOffset = i * 150;
+                    loraLoader.pos = [currentX, baseY + yOffset];
                     app.graph.add(loraLoader);
-                    nodes.push({node: loraLoader, type: 'lora'});
-                    console.log('LoraLoader created and added to graph');
+                    loraLoaders.push(loraLoader);
+                    nodes.push({node: loraLoader, type: 'lora', index: i});
+                    console.log(`LoraLoader ${i + 1} created and added to graph`);
                     
-                    // Configure LoRA
-                    const firstLoraMatch = loraMatches[0];
-                    console.log('Parsing LoRA:', firstLoraMatch);
-                    
-                    // Extract LoRA name and strength more carefully
+                    // Extract LoRA name and strength
                     const loraPattern = /<lora:([^:>]+)(?::([0-9.]+))?>/;
-                    const match = firstLoraMatch.match(loraPattern);
-                    const loraName = match ? match[1] : firstLoraMatch.replace(/<lora:([^:>]+).*>/, '$1');
+                    const match = loraMatch.match(loraPattern);
+                    const loraName = match ? match[1] : loraMatch.replace(/<lora:([^:>]+).*>/, '$1');
                     const loraStrength = match && match[2] ? parseFloat(match[2]) : 1.0;
                     
-                    console.log('LoRA name:', loraName, 'strength:', loraStrength);
-                    console.log('LoraLoader widgets:', loraLoader.widgets?.map(w => w.name));
+                    console.log(`LoRA ${i + 1} - name:`, loraName, 'strength:', loraStrength);
                     
+                    // Configure LoRA
                     if (loraLoader.widgets) {
                         const loraNameWidget = loraLoader.widgets.find(w => w.name === "lora_name");
                         const strengthModelWidget = loraLoader.widgets.find(w => w.name === "strength_model");
                         const strengthClipWidget = loraLoader.widgets.find(w => w.name === "strength_clip");
                         
-                        console.log('Found LoRA widgets:', {
-                            name: !!loraNameWidget,
-                            model: !!strengthModelWidget,
-                            clip: !!strengthClipWidget
-                        });
-                        
                         if (loraNameWidget) {
                             loraNameWidget.value = loraName;
-                            console.log('Set LoRA name to:', loraName);
+                            console.log(`Set LoRA ${i + 1} name to:`, loraName);
                         }
                         if (strengthModelWidget) {
                             strengthModelWidget.value = loraStrength;
-                            console.log('Set model strength to:', loraStrength);
+                            console.log(`Set LoRA ${i + 1} model strength to:`, loraStrength);
                         }
                         if (strengthClipWidget) {
                             strengthClipWidget.value = loraStrength;
-                            console.log('Set clip strength to:', loraStrength);
+                            console.log(`Set LoRA ${i + 1} clip strength to:`, loraStrength);
                         }
                         
                         // Trigger widget updates
@@ -333,18 +461,34 @@ app.registerExtension({
                         });
                     }
                     
-                    // Connect checkpoint to LoRA
-                    if (checkpointLoader) {
-                        console.log('Connecting checkpoint to LoRA...');
-                        checkpointLoader.connect(0, loraLoader, 0); // MODEL
-                        checkpointLoader.connect(1, loraLoader, 1); // CLIP
-                        console.log('LoRA connections established');
+                    // Connect LoRAs in chain: Checkpoint -> LoRA1 -> LoRA2 -> ...
+                    if (i === 0) {
+                        // First LoRA connects to checkpoint
+                        if (checkpointLoader) {
+                            console.log(`Connecting checkpoint to LoRA ${i + 1}...`);
+                            checkpointLoader.connect(0, loraLoader, 0); // MODEL
+                            checkpointLoader.connect(1, loraLoader, 1); // CLIP
+                        }
+                    } else {
+                        // Subsequent LoRAs connect to previous LoRA
+                        const previousLoRA = loraLoaders[i - 1];
+                        if (previousLoRA) {
+                            console.log(`Connecting LoRA ${i} to LoRA ${i + 1}...`);
+                            previousLoRA.connect(0, loraLoader, 0); // MODEL
+                            previousLoRA.connect(1, loraLoader, 1); // CLIP
+                        }
                     }
+                    
+                    console.log(`LoRA ${i + 1} connections established`);
                 }
+                
                 currentX += nodeSpacing;
             } else {
                 console.log('No LoRA detected in prompt');
             }
+            
+            // Get the final source for MODEL and CLIP (last LoRA or checkpoint)
+            const finalModelSource = loraLoaders.length > 0 ? loraLoaders[loraLoaders.length - 1] : checkpointLoader;
             
             // 3. Positive Prompt
             const positivePrompt = LiteGraph.createNode("CLIPTextEncode");
@@ -376,10 +520,9 @@ app.registerExtension({
                 }
                 
                 // Connect CLIP
-                const clipSource = loraLoader || checkpointLoader;
-                if (clipSource) {
-                    console.log('Connecting CLIP to positive prompt from:', clipSource.type || 'unknown');
-                    clipSource.connect(1, positivePrompt, 0); // CLIP
+                if (finalModelSource) {
+                    console.log('Connecting CLIP to positive prompt from:', finalModelSource.type || 'final source');
+                    finalModelSource.connect(1, positivePrompt, 0); // CLIP
                 } else {
                     console.warn('No CLIP source found for positive prompt');
                 }
@@ -407,9 +550,8 @@ app.registerExtension({
                 }
                 
                 // Connect CLIP
-                const clipSource = loraLoader || checkpointLoader;
-                if (clipSource) {
-                    clipSource.connect(1, negativePrompt, 0); // CLIP
+                if (finalModelSource) {
+                    finalModelSource.connect(1, negativePrompt, 0); // CLIP
                     console.log('Connected CLIP to negative prompt');
                 }
             }
@@ -455,9 +597,8 @@ app.registerExtension({
                 this.configureKSampler(ksampler, data);
                 
                 // Connect inputs
-                const modelSource = loraLoader || checkpointLoader;
-                if (modelSource) {
-                    modelSource.connect(0, ksampler, 0); // MODEL
+                if (finalModelSource) {
+                    finalModelSource.connect(0, ksampler, 0); // MODEL
                 }
                 if (positivePrompt) {
                     positivePrompt.connect(0, ksampler, 1); // POSITIVE

@@ -1,0 +1,64 @@
+=== 多 LoRA 测试用例 ===
+
+=== 测试 1: 双 LoRA 不同强度 ===
+a beautiful anime girl, masterpiece, best quality, <lora:DetailedEyes:0.8>, detailed face, <lora:ArtStyle:1.2>, fantasy background
+
+Negative prompt: blurry, low quality, distorted face, bad anatomy
+
+Steps: 25, Sampler: DPM++ 2M Karras, CFG scale: 7.5, Seed: 123456789, Size: 768x1024, Model: animagineXLV3_v30, Scheduler: karras
+
+=== 测试 2: 三 LoRA 组合 ===
+cyberpunk cityscape, neon lights, <lora:cyberpunk:0.9>, futuristic car, <lora:vehicles:0.7>, night scene, <lora:lighting:1.0>, ultra detailed
+
+Negative prompt: low quality, blurry, bad composition
+
+Steps: 30, Sampler: Euler a, CFG scale: 8.0, Seed: 987654321, Size: 1024x768, baseModel: dreamshaper_8
+
+=== 测试 3: JSON 格式多 LoRA ===
+{
+  "prompt": "portrait of a warrior princess, <lora:fantasy:0.8>, detailed armor, <lora:medieval:0.6>, dramatic lighting, <lora:portrait:1.1>",
+  "negativePrompt": "worst quality, low quality, bad anatomy, blurry",
+  "steps": 35,
+  "sampler": "DPM++ 3M SDE",
+  "cfgScale": 7.0,
+  "seed": 555666777,
+  "width": 768,
+  "height": 1024,
+  "baseModel": "realisticVisionV51_v51VAE.safetensors",
+  "resources": [
+    {
+      "type": "model",
+      "name": "realisticVisionV51_v51VAE",
+      "hash": "abc123def456"
+    },
+    {
+      "type": "lora",
+      "name": "fantasy",
+      "weight": 0.8
+    },
+    {
+      "type": "lora", 
+      "name": "medieval",
+      "weight": 0.6
+    },
+    {
+      "type": "lora",
+      "name": "portrait", 
+      "weight": 1.1
+    }
+  ]
+}
+
+=== 测试 4: 五个 LoRA 复杂组合 ===
+masterpiece, 1girl, beautiful face, <lora:face:0.9>, elegant dress, <lora:clothing:0.7>, in a garden, <lora:background:0.8>, soft lighting, <lora:lighting:1.0>, romantic atmosphere, <lora:mood:0.6>
+
+Negative prompt: nsfw, ugly, deformed, bad hands, low quality
+
+Steps: 40, Sampler: UniPC, CFG scale: 6.5, Seed: 111222333, Size: 832x1216, Model: deliberate_v2, Scheduler: exponential
+
+=== 测试 5: 混合格式 (有些 LoRA 无强度值) ===
+sci-fi spaceship, <lora:scifi>, detailed interior, <lora:interior:0.9>, control panels, <lora:technology:1.2>, blue lighting, <lora:lighting>
+
+Negative prompt: blurry, low resolution, bad quality
+
+Steps: 28, Sampler: DPM++ 2M SDE, CFG scale: 7.5, Seed: 444555666, Size: 1024x576, baseModel: sdxl_base_1.0
